@@ -1,8 +1,6 @@
 import eventEmitter from './utils/EventEmitter.js';
-import { VideoError } from './utils/ErrorHandler.js';
-import { AnimationLoop } from './utils/performance.js';
+import { VideoError, ProviderError } from './utils/ErrorHandler.js';
 import { VIDEO } from './config/config.js';
-import videoSourceManager from './videoSources.js';
 
 /**
  * Manages video playback and state
@@ -12,9 +10,8 @@ export class VideoController {
         this.video = videoElement;
         this.providers = providers;
         this.currentProvider = 0;
-        this.isSeeking = false;
         this.currentCid = null;
-        this.bufferCheckInterval = null;
+        this.debug = true; // Set to false to disable logging
         this.initialize();
     }
 
@@ -24,7 +21,6 @@ export class VideoController {
     initialize() {
         this.setupVideoElement();
         this.setupEventListeners();
-        this.setupBufferCheck();
     }
 
     /**
@@ -40,30 +36,7 @@ export class VideoController {
      * Set up event listeners
      */
     setupEventListeners() {
-        // Seeking events
-        this.video.addEventListener('seeking', () => {
-            this.isSeeking = true;
-            eventEmitter.emit('video:seeking', {
-                currentTime: this.video.currentTime,
-                duration: this.video.duration
-            });
-        });
-
-        this.video.addEventListener('seeked', () => {
-            this.isSeeking = false;
-            eventEmitter.emit('video:seeked', {
-                currentTime: this.video.currentTime,
-                duration: this.video.duration
-            });
-        });
-
         // Buffer events
-        this.video.addEventListener('waiting', () => {
-            if (!this.isSeeking) {
-                this.checkBufferStatus();
-            }
-        });
-
         this.video.addEventListener('canplay', () => {
             eventEmitter.emit('video:can-play');
         });
@@ -77,15 +50,6 @@ export class VideoController {
             );
             eventEmitter.emit('video:error', error);
         });
-    }
-
-    /**
-     * Set up buffer checking
-     */
-    setupBufferCheck() {
-        this.bufferCheckInterval = setInterval(() => {
-            this.checkBufferStatus();
-        }, VIDEO.BUFFER_CHECK_DELAY);
     }
 
     /**
@@ -112,113 +76,64 @@ export class VideoController {
         const provider = this.providers[this.currentProvider];
 
         try {
-            const response = await this.fetchVideoMetadata(videoId, provider);
+            const response = await provider.fetch(videoId, 0, 0);
             await this.setupVideoSource(response);
+            
             // Store last working provider
             const cache = JSON.parse(localStorage.getItem(VIDEO.CID_VALID_CACHE_KEY) || '{}');
             cache[videoId] = {
                 ...cache[videoId],
-                lastWorkingProvider: provider.name
+                lastWorkingProvider: provider.name,
+                timestamp: Date.now()
             };
             localStorage.setItem(VIDEO.CID_VALID_CACHE_KEY, JSON.stringify(cache));
         } catch (error) {
             console.warn(`Provider ${provider.name} failed:`, error);
+            // Emit provider error for factory handling
+            eventEmitter.emit('provider:error', {
+                error: new ProviderError(error.message, provider.name),
+                context: { videoId, currentProvider: this.currentProvider }
+            });
             this.currentProvider++;
             return this.tryLoadWithProvider(videoId);
         }
     }
 
     /**
-     * Generate provider URL for CID
-     * @param {string} cid - Content ID
-     * @param {string} preferredProvider - Preferred provider name
-     * @returns {string} - Provider URL
-     */
-    generateProviderUrl(cid, preferredProvider) {
-        const provider = this.providers.find(p => p.name === preferredProvider) 
-            || this.providers[this.currentProvider];
-        return provider.getUrl(cid);
-    }
-
-    /**
      * Get current CID
-     * @returns {string|null} - Current content ID
+     * @returns {string|null} Current content ID
      */
     getCurrentCid() {
         return this.currentCid;
     }
 
     /**
-     * Seek to specific time with timeout
-     * @param {number} time - Time to seek to
-     * @param {number} timeout - Timeout in milliseconds
-     * @returns {Promise<void>}
+     * Generate provider URL
+     * @param {string} cid Content ID
+     * @param {string} preferredProvider Preferred provider name 
+     * @returns {string} Provider URL
      */
-    async seekTo(time, timeout = 3000) {
-        if (!this.video.seekable) return;
-
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.video.removeEventListener('seeked', onSeeked);
-                reject(new Error('Seek timeout'));
-            }, timeout);
-
-            const onSeeked = () => {
-                clearTimeout(timer);
-                this.video.removeEventListener('seeked', onSeeked);
-                resolve();
-            };
+    generateProviderUrl(cid, preferredProvider) {
+        const provider = this.providers.find(p => p.name === preferredProvider) 
+            || this.providers[this.currentProvider];
             
-            this.video.addEventListener('seeked', onSeeked, { once: true });
-            this.video.currentTime = time;
-            
-            // Add seeking state management
-            if (!this.video.seeking) {
-                this.isSeeking = true;
-                const onSeeking = () => {
-                    this.isSeeking = true;
-                    this.video.removeEventListener('seeking', onSeeking);
-                };
-                this.video.addEventListener('seeking', onSeeking, { once: true });
-            }
-        }).finally(() => {
-            this.isSeeking = false;
-        });
-    }
-
-    /**
-     * Seek by delta with timeout
-     * @param {number} delta - Time delta to seek by
-     * @param {number} timeout - Timeout in milliseconds
-     * @returns {Promise<void>}
-     */
-    async seekBy(delta, timeout = 3000) {
-        return this.seekTo(
-            Math.max(0, Math.min(this.video.duration, this.video.currentTime + delta)),
-            timeout
-        );
-    }
-
-    /**
-     * Fetch video metadata from provider
-     * @param {string} videoId - Video ID or CID
-     * @param {Object} provider - Provider object
-     * @returns {Promise<Response>}
-     */
-    async fetchVideoMetadata(videoId, provider) {
-        const response = await provider.fetch(videoId, 0, 0);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+        if (!provider) {
+            throw new Error('No valid provider available');
         }
 
-        // Check for video mime type
-        const contentType = response.headers.get('content-type');
-        if (!contentType?.includes('video/')) {
-            throw new Error('Invalid content type');
+        // Use the provider's URL builder if available, otherwise construct default URL
+        if (provider.getUrl) {
+            return provider.getUrl(cid);
         }
 
-        return response;
+        // Default URL construction (matches factory's buildProviderUrl logic)
+        const providerName = provider.name.toLowerCase();
+        if (providerName === 'ipfs.io') {
+            return `https://ipfs.io/ipfs/${cid}`;
+        }
+        return ["dweb.link", "flk-ipfs.xyz"].includes(providerName)
+            ? `https://${cid}.ipfs.${providerName}`
+            : `https://ipfs.${providerName}/ipfs/${cid}`;
     }
 
     /**
@@ -227,6 +142,12 @@ export class VideoController {
      * @returns {Promise<void>}
      */
     async setupVideoSource(response) {
+        // Check for video mime type
+        const contentType = response.headers.get('content-type');
+        if (!contentType?.includes('video/')) {
+            throw new Error('Invalid content type');
+        }
+
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
 
@@ -254,34 +175,6 @@ export class VideoController {
     }
 
     /**
-     * Check video buffer status
-     */
-    checkBufferStatus() {
-        if (!this.video.buffered.length) return;
-
-        const currentTime = this.video.currentTime;
-        const buffered = this.video.buffered;
-        let isInBuffer = false;
-
-        for (let i = 0; i < buffered.length; i++) {
-            if (currentTime >= buffered.start(i) && currentTime <= buffered.end(i)) {
-                isInBuffer = true;
-                break;
-            }
-        }
-
-        if (!isInBuffer && !this.isSeeking) {
-            eventEmitter.emit('video:buffer-stalled', {
-                currentTime: currentTime,
-                buffered: Array.from({ length: buffered.length }, (_, i) => ({
-                    start: buffered.start(i),
-                    end: buffered.end(i)
-                }))
-            });
-        }
-    }
-
-    /**
      * Get current playback state
      * @returns {Object} - Playback state
      */
@@ -294,7 +187,6 @@ export class VideoController {
             volume: this.video.volume,
             muted: this.video.muted,
             playbackRate: this.video.playbackRate,
-            seeking: this.isSeeking,
             currentProvider: this.providers[this.currentProvider]?.name,
             currentCid: this.currentCid
         };
@@ -304,7 +196,6 @@ export class VideoController {
      * Clean up resources
      */
     dispose() {
-        clearInterval(this.bufferCheckInterval);
         if (this.video.src) {
             URL.revokeObjectURL(this.video.src);
         }

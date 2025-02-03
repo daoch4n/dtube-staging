@@ -6,11 +6,15 @@ import { FrameRateLimiter, ColorAnalyzer } from './utils/performance.js';
 import { PERFORMANCE, UI, VIDEO } from './config/config.js';
 import videoSourceManager from './videoSources.js';
 
-// Global state
+// Global state (CRITICAL: these must be global)
 let isSeeking = false;
 let isRecovering = false;
 let bufferingUpdateScheduled = false;
 const providerIndices = new Map();
+
+// Video source management
+let currentVideoIndex = 0;
+const videoSources = [];
 
 /**
  * Main application class
@@ -22,9 +26,15 @@ class VideoApp {
             throw new Error(`Container element #${containerId} not found`);
         }
 
+        // Create wrapper first
+        this.wrapper = document.createElement('div');
+        this.wrapper.className = 'video-wrapper';
+        this.container.appendChild(this.wrapper);
+
+        // Initialize video element inside wrapper
         this.videoElement = document.createElement('video');
         this.videoElement.playsInline = true;
-        this.container.appendChild(this.videoElement);
+        this.wrapper.appendChild(this.videoElement);
 
         this.initialize();
     }
@@ -35,7 +45,7 @@ class VideoApp {
     initialize() {
         // Initialize controllers
         this.videoController = videoControllerFactory.createController(this.videoElement);
-        this.uiController = new UIController(this.container);
+        this.uiController = new UIController(this.container, this.wrapper);
 
         // Initialize utilities
         this.frameLimiter = new FrameRateLimiter(30);
@@ -44,12 +54,53 @@ class VideoApp {
         this.setupEventListeners();
         this.setupKeyboardControls();
         this.setupColorAnalysis();
+
+        // Load initial video sources
+        this.loadVideoSources();
+    }
+
+    /**
+     * Load video sources
+     */
+    async loadVideoSources() {
+        try {
+            const sources = await videoSourceManager.getValidCids();
+            videoSources.push(...sources);
+            if (videoSources.length > 0) {
+                this.loadVideo(videoSources[0]);
+            }
+        } catch (error) {
+            console.error('Failed to load video sources:', error);
+        }
+    }
+
+    /**
+     * Load next video
+     */
+    loadNextVideo() {
+        if (videoSources.length === 0) return;
+        
+        currentVideoIndex = (currentVideoIndex + 1) % videoSources.length;
+        this.loadVideo(videoSources[currentVideoIndex]);
+    }
+
+    /**
+     * Load previous video
+     */
+    loadPrevVideo() {
+        if (videoSources.length === 0) return;
+        
+        currentVideoIndex = (currentVideoIndex - 1 + videoSources.length) % videoSources.length;
+        this.loadVideo(videoSources[currentVideoIndex]);
     }
 
     /**
      * Set up event listeners
      */
     setupEventListeners() {
+        // Register all video event listeners
+        this.registerVideoEventListeners();
+
         // Playback control events
         eventEmitter.on('video:toggle-play', () => {
             if (this.videoElement.paused) {
@@ -63,9 +114,7 @@ class VideoApp {
 
         eventEmitter.on('video:seek-percent', (percent) => {
             const time = this.videoElement.duration * percent;
-            this.videoElement.currentTime = time;
-            isSeeking = true;
-            setTimeout(() => isSeeking = false, 100);
+            this.seekTo(time);
         });
 
         eventEmitter.on('video:seek-forward', () => {
@@ -81,7 +130,16 @@ class VideoApp {
             this.videoElement.muted = volume === 0;
         });
 
-        // Video state events
+        // Provider events
+        eventEmitter.on('provider:disabled', (provider) => {
+            console.warn(`Provider ${provider} has been disabled due to errors`);
+        });
+    }
+
+    /**
+     * Register video event listeners
+     */
+    registerVideoEventListeners() {
         this.videoElement.addEventListener('timeupdate', () => {
             eventEmitter.emit('video:timeupdate', {
                 currentTime: this.videoElement.currentTime,
@@ -95,17 +153,6 @@ class VideoApp {
 
         this.videoElement.addEventListener('pause', () => {
             eventEmitter.emit('video:pause');
-        });
-
-        // Buffer and seeking events
-        this.videoElement.addEventListener('seeking', () => {
-            isSeeking = true;
-            if (this.uiController) this.uiController.handleBufferingStart(true);
-        });
-
-        this.videoElement.addEventListener('seeked', () => {
-            isSeeking = false;
-            if (this.uiController) this.uiController.handleBufferingEnd();
         });
 
         this.videoElement.addEventListener('waiting', () => {
@@ -122,46 +169,22 @@ class VideoApp {
             }
         });
 
-        // Error handling
-        eventEmitter.on('error:fatal', (error) => {
-            console.error('Fatal error:', error);
-            this.showErrorMessage('An error occurred while playing the video');
+        this.videoElement.addEventListener('seeking', () => {
+            isSeeking = true;
+            if (this.uiController) this.uiController.handleBufferingStart(true);
         });
 
-        // Provider events
-        eventEmitter.on('provider:disabled', (provider) => {
-            console.warn(`Provider ${provider} has been disabled due to errors`);
+        this.videoElement.addEventListener('seeked', () => {
+            isSeeking = false;
+            if (this.uiController) this.uiController.handleBufferingEnd();
         });
-    }
 
-    /**
-     * Set up keyboard controls
-     */
-    setupKeyboardControls() {
-        document.addEventListener('keydown', (event) => {
-            switch (event.key.toLowerCase()) {
-                case ' ':
-                case 'k':
-                    event.preventDefault();
-                    eventEmitter.emit('video:toggle-play');
-                    break;
-                case 'arrowleft':
-                    event.preventDefault();
-                    eventEmitter.emit('video:seek-backward');
-                    break;
-                case 'arrowright':
-                    event.preventDefault();
-                    eventEmitter.emit('video:seek-forward');
-                    break;
-                case 'f':
-                    event.preventDefault();
-                    this.container.requestFullscreen();
-                    break;
-                case 'm':
-                    event.preventDefault();
-                    this.videoElement.muted = !this.videoElement.muted;
-                    break;
-            }
+        this.videoElement.addEventListener('ended', () => {
+            this.loadNextVideo();
+        });
+
+        this.videoElement.addEventListener('error', (e) => {
+            errorHandler.handleVideoError(e.error || new Error('Video playback error'));
         });
     }
 
@@ -171,12 +194,12 @@ class VideoApp {
     async handleBufferRecovery() {
         if (isRecovering) return;
         isRecovering = true;
-
+        
         const currentTime = this.videoElement.currentTime;
-        const currentCid = this.videoController.getCurrentCid();
+        const currentCid = videoSources[currentVideoIndex];
         const bufferTimeout = 1000;
         const recoveryAbortController = new AbortController();
-
+        
         try {
             await Promise.race([
                 new Promise(resolve => {
@@ -232,12 +255,53 @@ class VideoApp {
 
     /**
      * Seek by seconds
-     * @param {number} seconds - Seconds to seek
+     * @param {number} seconds - Seconds to seek by
      */
     secsSeek(seconds) {
         this.videoElement.currentTime = Math.max(0, this.videoElement.currentTime + seconds);
         isSeeking = true;
         setTimeout(() => isSeeking = false, 100);
+    }
+
+    /**
+     * Seek to specific time
+     * @param {number} time - Time to seek to
+     */
+    seekTo(time) {
+        this.videoElement.currentTime = Math.max(0, Math.min(time, this.videoElement.duration));
+        isSeeking = true;
+        setTimeout(() => isSeeking = false, 100);
+    }
+
+    /**
+     * Set up keyboard controls
+     */
+    setupKeyboardControls() {
+        document.addEventListener('keydown', (event) => {
+            switch (event.key.toLowerCase()) {
+                case ' ':
+                case 'k':
+                    event.preventDefault();
+                    eventEmitter.emit('video:toggle-play');
+                    break;
+                case 'arrowleft':
+                    event.preventDefault();
+                    eventEmitter.emit('video:seek-backward');
+                    break;
+                case 'arrowright':
+                    event.preventDefault();
+                    eventEmitter.emit('video:seek-forward');
+                    break;
+                case 'f':
+                    event.preventDefault();
+                    this.container.requestFullscreen();
+                    break;
+                case 'm':
+                    event.preventDefault();
+                    this.videoElement.muted = !this.videoElement.muted;
+                    break;
+            }
+        });
     }
 
     /**
@@ -283,22 +347,8 @@ class VideoApp {
             await this.videoElement.play();
         } catch (error) {
             errorHandler.handleVideoError(error);
+            this.loadNextVideo(); // Try next video on error
         }
-    }
-
-    /**
-     * Show error message to user
-     * @param {string} message - Error message
-     */
-    showErrorMessage(message) {
-        const errorElement = document.createElement('div');
-        errorElement.className = 'error-message';
-        errorElement.textContent = message;
-
-        this.container.appendChild(errorElement);
-        setTimeout(() => {
-            errorElement.remove();
-        }, 5000);
     }
 
     /**
