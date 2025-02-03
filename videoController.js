@@ -69,34 +69,30 @@ export class VideoController {
      * @returns {Promise<void>}
      */
     async tryLoadWithProvider(videoId) {
-        if (this.currentProvider >= this.providers.length) {
-            throw new VideoError('All providers failed', 'PROVIDER_FAILURE', false);
-        }
+        // Add provider scoring system
+        const providerScores = new Map();
 
-        const provider = this.providers[this.currentProvider];
+        // Sort providers by score before trying
+        const sortedProviders = [...this.providers].sort((a, b) => 
+            (providerScores.get(b.name) || 0) - (providerScores.get(a.name) || 0)
+        );
 
-        try {
-            const response = await provider.fetch(videoId, 0, 0);
-            await this.setupVideoSource(response);
-            
-            // Store last working provider
-            const cache = JSON.parse(localStorage.getItem(VIDEO.CID_VALID_CACHE_KEY) || '{}');
-            cache[videoId] = {
-                ...cache[videoId],
-                lastWorkingProvider: provider.name,
-                timestamp: Date.now()
-            };
-            localStorage.setItem(VIDEO.CID_VALID_CACHE_KEY, JSON.stringify(cache));
-        } catch (error) {
-            console.warn(`Provider ${provider.name} failed:`, error);
-            // Emit provider error for factory handling
-            eventEmitter.emit('provider:error', {
-                error: new ProviderError(error.message, provider.name),
-                context: { videoId, currentProvider: this.currentProvider }
-            });
-            this.currentProvider++;
-            return this.tryLoadWithProvider(videoId);
+        for (const provider of sortedProviders) {
+            try {
+                const response = await provider.fetch(videoId);
+                // Update provider score on success
+                providerScores.set(provider.name, (providerScores.get(provider.name) || 100) + 5);
+                return this.setupVideoSource(response);
+            } catch (error) {
+                // Penalize failed provider
+                providerScores.set(provider.name, (providerScores.get(provider.name) || 100) - 20);
+                eventEmitter.emit('provider:error', {
+                    error: new ProviderError(error.message, provider.name),
+                    context: { videoId }
+                });
+            }
         }
+        throw new VideoError('All providers failed', 'PROVIDER_FAILURE');
     }
 
     /**

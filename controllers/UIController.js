@@ -423,10 +423,12 @@ class UIController {
 
   handleProgressMouseDown(e) {
     this.state.isDragging = true;
+    isDraggingProgress = true;
     this.showControls();
     this.elements.progressContainer.setPointerCapture(e.pointerId);
     this.seek(e.clientX);
     eventEmitter.emit('video:seeking-start');
+    this.updateSeekPreview(true);
   }
 
   handleProgressDrag(e) {
@@ -435,7 +437,10 @@ class UIController {
       const offsetX = e.clientX - rect.left;
       const percent = Math.min(Math.max(0, offsetX / rect.width), 1);
       
-      eventEmitter.emit('video:seeking-update', percent);
+      eventEmitter.emit('video:seeking-update', {
+        percent,
+        offsetX: offsetX + rect.left
+      });
       this.updateTimestampPopupPreview(offsetX);
     }
   }
@@ -443,10 +448,17 @@ class UIController {
   handleProgressMouseUp() {
     if (this.state.isDragging) {
       this.state.isDragging = false;
+      isDraggingProgress = false;
       eventEmitter.emit('video:seeking-end');
       this.elements.progressContainer.releasePointerCapture();
       this.hideTimestampPopup();
+      this.updateSeekPreview(false);
     }
+  }
+
+  updateSeekPreview(active) {
+    this.elements.progressContainer.classList.toggle('seeking-preview', active);
+    this.elements.progressBar.classList.toggle('active', active);
   }
 }
 

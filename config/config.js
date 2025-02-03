@@ -33,6 +33,11 @@ export const UI = {
     WIDTH: 32,
     HEIGHT: 32,
     PIXEL_STEP: 16
+  },
+  SEEK_PREVIEW: {
+    TRANSITION: '0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+    OPACITY: 0.8,
+    SCALE: 1.05
   }
 };
 

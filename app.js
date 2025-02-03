@@ -11,6 +11,7 @@ let isSeeking = false;
 let isRecovering = false;
 let bufferingUpdateScheduled = false;
 const providerIndices = new Map();
+let isDraggingProgress = false;
 
 // Video source management
 let currentVideoIndex = 0;
@@ -172,11 +173,13 @@ class VideoApp {
         this.videoElement.addEventListener('seeking', () => {
             isSeeking = true;
             this.uiController.handleBufferingStart(true);
+            eventEmitter.emit('video:seeking-start');
         });
 
         this.videoElement.addEventListener('seeked', () => {
             isSeeking = false;
             this.uiController.handleBufferingEnd();
+            eventEmitter.emit('video:seeking-end');
         });
 
         this.videoElement.addEventListener('ended', () => {
@@ -192,14 +195,15 @@ class VideoApp {
      * Handle buffer recovery
      */
     async handleBufferRecovery() {
-        if (isRecovering) return;
-        isRecovering = true;
-        
-        const currentTime = this.videoElement.currentTime;
-        const currentCid = videoSources[currentVideoIndex];
-        const bufferTimeout = 1500;
-        
+        const startTime = performance.now();
         try {
+            if (isRecovering) return;
+            isRecovering = true;
+            
+            const currentTime = this.videoElement.currentTime;
+            const currentCid = videoSources[currentVideoIndex];
+            const bufferTimeout = 1500;
+            
             const recoverySuccess = await Promise.race([
                 new Promise(resolve => {
                     this.videoElement.addEventListener('playing', () => resolve(true), { once: true });
@@ -214,6 +218,14 @@ class VideoApp {
                 await this.videoElement.play();
             }
         } finally {
+            const duration = performance.now() - startTime;
+            performance.mark('buffer-recovery-end', {
+                detail: {
+                    duration,
+                    success: !isRecovering,
+                    videoTime: this.videoElement.currentTime
+                }
+            });
             isRecovering = false;
         }
     }
@@ -223,9 +235,8 @@ class VideoApp {
      * @param {number} seconds - Seconds to seek by
      */
     secsSeek(seconds) {
-        this.videoElement.currentTime = Math.max(0, this.videoElement.currentTime + seconds);
-        isSeeking = true;
-        setTimeout(() => isSeeking = false, 100);
+        const newTime = Math.max(0, this.videoElement.currentTime + seconds);
+        this.seekTo(newTime);
     }
 
     /**
