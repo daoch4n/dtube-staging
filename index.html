@@ -1,92 +1,22 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DaokoTube</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2280%22 fill=%22%231da1f2%22>💙</text></svg>">
-    <link rel="stylesheet" href="styles.css" />
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-      body {
-        font-family: 'Roboto', sans-serif;
-      }
-
-      .notifications {
-        position: fixed;
-        top: 0;
-        left: 50%;
-        transform: translateX(-50%) translateY(-100%);
-        transition: all 0.3s ease;
-        z-index: 1000;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        border-radius: 0 0 4px 4px;
-        font-family: 'Roboto', sans-serif;
-        backdrop-filter: blur(10px) saturate(180%);
-        -webkit-backdrop-filter: blur(10px) saturate(180%);
-        background-color: rgba(255, 255, 255, 0.7);
-        border: 1px solid rgba(209, 213, 219, 0.3);
-      }
-
-      .notifications.show {
-        transform: translateX(-50%) translateY(0);
-      }
-
-      @keyframes slideIn {
-        from {
-          transform: translateX(-50%) translateY(-100%);
-        }
-        to {
-          transform: translateX(-50%) translateY(0);
-        }
-      }
-
-      .progress-container {
-        position: relative;
-        width: 100%;
-        height: 4px;
-        margin: 30px 0; /* Creates space for timestamp popup */
-        cursor: pointer;
-        background-color: rgba(255, 255, 255, 0.1);
-        border-radius: 2px;
-        transition: height 0.2s ease;
-      }
-
-      .progress-container:hover {
-        height: 6px;
-      }
-    </style>
-  </head>
-  <body>
-    <main class="container">
-      <div id="spinner" class="spinner" aria-hidden="true"></div>
-      <section class="video-wrapper">
-        <video id="videoPlayer" playsinline muted></video>
-        <div id="controls" class="controls">
-          <div class="progress-container">
-            <div class="buffer-bar"></div>
-            <div class="progress-bar"></div>
-            <!-- Timestamp popup will be inserted here by UIController -->
-          </div>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Player</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div id="video-player" class="video-player">
+            <!-- Video element and controls will be injected by JavaScript -->
         </div>
-        <div id="interactionZones">
-          <div class="zone left-zone"></div>
-          <div class="zone center-zone"></div>
-          <div class="zone right-zone"></div>
+
+        <div class="error-container">
+            <!-- Error messages will be displayed here -->
         </div>
-        <div id="notifications-container" class="notifications-container">
-          <!-- Notifications will be dynamically inserted here -->
-        </div>
-        <div id="playPauseAnimation" class="play-pause-animation">
-          <svg class="play-icon" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M8 5v14l11-7z"/>
-          </svg>
-          <svg class="pause-icon" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-          </svg>
-        </div>
-      </section>
-    </main>
-    <script defer type="module" src="app.js"></script>
-  </body>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
 </html>
