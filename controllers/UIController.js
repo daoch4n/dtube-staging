@@ -11,12 +11,19 @@ class UIController {
     this.controlsVisible = true;
     this.userInteracting = false;
     this.lastInteraction = Date.now();
+    this.state = {
+      isDragging: false,
+      isDraggingPopup: false,
+      cachedRect: null
+    };
 
     // UI Elements
     this.elements = {
       controls: null,
+      progressContainer: null,
       progress: null,
       timestamp: null,
+      timestampPopup: null,
       playButton: null,
       volumeSlider: null,
       fullscreenButton: null,
@@ -43,6 +50,10 @@ class UIController {
     this.elements.controls = document.createElement('div');
     this.elements.controls.className = 'video-controls';
 
+    // Progress container
+    this.elements.progressContainer = document.createElement('div');
+    this.elements.progressContainer.className = 'progress-container';
+
     // Progress bar
     this.elements.progress = document.createElement('div');
     this.elements.progress.className = 'progress-bar';
@@ -51,7 +62,12 @@ class UIController {
     this.elements.bufferBar.className = 'buffer-bar';
     this.elements.progress.appendChild(this.elements.bufferBar);
 
-    // Timestamp
+    // Timestamp popup
+    this.elements.timestampPopup = document.createElement('div');
+    this.elements.timestampPopup.className = 'timestamp-popup';
+    this.elements.timestampPopup.style.display = 'none';
+
+    // Regular timestamp
     this.elements.timestamp = document.createElement('div');
     this.elements.timestamp.className = 'timestamp';
 
@@ -72,9 +88,12 @@ class UIController {
     this.elements.fullscreenButton.className = 'fullscreen-button';
 
     // Append elements
+    this.elements.progressContainer.appendChild(this.elements.progress);
+    this.elements.progressContainer.appendChild(this.elements.timestampPopup);
+
     this.elements.controls.appendChild(this.elements.playButton);
     this.elements.controls.appendChild(this.elements.volumeSlider);
-    this.elements.controls.appendChild(this.elements.progress);
+    this.elements.controls.appendChild(this.elements.progressContainer);
     this.elements.controls.appendChild(this.elements.timestamp);
     this.elements.controls.appendChild(this.elements.fullscreenButton);
 
@@ -85,6 +104,16 @@ class UIController {
    * Set up event listeners
    */
   setupEventListeners() {
+    // Use unified pointer events
+    const wrapper = document.querySelector('.video-wrapper');
+    const handler = this.handleUnifiedPointerEvent.bind(this);
+    
+    // Use passive: false for pointerdown to allow preventDefault
+    wrapper.addEventListener('pointerdown', handler, { passive: false });
+    wrapper.addEventListener('pointermove', throttle(handler, 32), { passive: true });
+    wrapper.addEventListener('pointerup', handler, { passive: true });
+    wrapper.addEventListener('pointercancel', handler, { passive: true });
+
     // Mouse movement
     this.container.addEventListener('mousemove',
       throttle(this.handleMouseMove.bind(this), UI.CONTROLS_TIMEOUT / 3)
@@ -104,37 +133,72 @@ class UIController {
       lastTap = now;
     });
 
-    // Progress bar
-    this.elements.progress.addEventListener('mousedown',
-      this.handleProgressMouseDown.bind(this)
-    );
-
-    document.addEventListener('mouseup',
-      this.handleProgressMouseUp.bind(this)
-    );
-
-    document.addEventListener('mousemove',
-      throttle(this.handleProgressMouseMove.bind(this), UI.THROTTLE.PROGRESS)
-    );
-
-    // Playback controls
-    this.elements.playButton.addEventListener('click',
-      this.handlePlayClick.bind(this)
-    );
-
-    this.elements.volumeSlider.addEventListener('input',
-      debounce(this.handleVolumeChange.bind(this), 100)
-    );
-
-    this.elements.fullscreenButton.addEventListener('click',
-      this.handleFullscreenClick.bind(this)
-    );
-
     // Video events
     eventEmitter.on('video:timeupdate', this.updateProgress.bind(this));
     eventEmitter.on('video:buffer-update', this.updateBuffer.bind(this));
     eventEmitter.on('video:play', () => this.updatePlayButton(true));
     eventEmitter.on('video:pause', () => this.updatePlayButton(false));
+    eventEmitter.on('video:seeking', () => this.handleBufferingStart(true));
+    eventEmitter.on('video:seeked', () => this.handleBufferingEnd());
+  }
+
+  /**
+   * Handle unified pointer events
+   * @param {PointerEvent} e - Pointer event
+   */
+  handleUnifiedPointerEvent(e) {
+    switch (e.type) {
+      case 'pointerdown':
+        this.handlePointerDown(e);
+        break;
+      case 'pointermove':
+        this.handlePointerMove(e);
+        break;
+      case 'pointerup':
+      case 'pointercancel':
+        this.handlePointerUp(e);
+        break;
+    }
+  }
+
+  /**
+   * Handle pointer down
+   * @param {PointerEvent} e - Pointer event
+   */
+  handlePointerDown(e) {
+    e.preventDefault();
+    this.state.isDragging = true;
+    this.showControls();
+    this.elements.progressContainer.setPointerCapture(e.pointerId);
+    this.seek(e.clientX);
+    this.elements.timestampPopup.style.display = 'block';
+    this.elements.progress.classList.add('dragging');
+    this.updateTimestampPopupPreview(this.calculateSeekPosition(e.clientX).offsetX);
+  }
+
+  /**
+   * Handle pointer move
+   * @param {PointerEvent} e - Pointer event
+   */
+  handlePointerMove(e) {
+    if (this.state.isDragging) {
+      this.seek(e.clientX);
+      this.updateTimestampPopupPreview(this.calculateSeekPosition(e.clientX).offsetX);
+    }
+  }
+
+  /**
+   * Handle pointer up
+   * @param {PointerEvent} e - Pointer event
+   */
+  handlePointerUp(e) {
+    if (this.state.isDragging) {
+      this.seek(e.clientX);
+      this.state.isDragging = false;
+      this.elements.progressContainer.classList.remove('dragging', 'active', 'near');
+      this.hideTimestampPopup();
+      this.elements.progress.classList.remove('dragging');
+    }
   }
 
   /**
@@ -142,10 +206,74 @@ class UIController {
    */
   setupControlsTimeout() {
     this.controlsTimeout = debounce(() => {
-      if (!this.userInteracting) {
+      if (!this.userInteracting && !this.state.isDragging) {
         this.hideControls();
       }
     }, UI.CONTROLS_TIMEOUT);
+  }
+
+  /**
+   * Calculate seek position from mouse x coordinate
+   * @param {number} clientX - Mouse X coordinate
+   * @returns {Object} Position data
+   */
+  calculateSeekPosition(clientX) {
+    if (!this.state.cachedRect) {
+      this.state.cachedRect = this.elements.progressContainer.getBoundingClientRect();
+    }
+    const rect = this.state.cachedRect;
+    const offsetX = Math.min(Math.max(0, clientX - rect.left), rect.width);
+    const time = (offsetX / rect.width) * this.video.duration;
+    return { offsetX, time };
+  }
+
+  /**
+   * Update timestamp popup preview
+   * @param {number} offsetX - Offset from left edge
+   */
+  updateTimestampPopupPreview(offsetX) {
+    if (this.elements.timestampPopup) {
+      this.elements.timestampPopup.style.left = `${offsetX}px`;
+      this.elements.timestampPopup.textContent = this.formatTime(
+        (offsetX / this.elements.progressContainer.offsetWidth) * this.video.duration
+      );
+    }
+  }
+
+  /**
+   * Hide timestamp popup
+   */
+  hideTimestampPopup() {
+    if (this.elements.timestampPopup) {
+      this.elements.timestampPopup.style.display = 'none';
+    }
+  }
+
+  /**
+   * Handle buffering start
+   * @param {boolean} isSeeking - Whether buffering is due to seeking
+   */
+  handleBufferingStart(isSeeking = false) {
+    this.elements.progressContainer.classList.add('buffering');
+    if (isSeeking) {
+      this.elements.progressContainer.classList.add('seeking');
+    }
+  }
+
+  /**
+   * Handle buffering end
+   */
+  handleBufferingEnd() {
+    this.elements.progressContainer.classList.remove('buffering', 'seeking');
+  }
+
+  /**
+   * Seek to position
+   * @param {number} clientX - Mouse X coordinate
+   */
+  seek(clientX) {
+    const position = this.calculateSeekPosition(clientX);
+    eventEmitter.emit('video:seek-percent', position.time / this.video.duration);
   }
 
   /**
@@ -156,33 +284,6 @@ class UIController {
     this.lastInteraction = Date.now();
     this.showControls();
     this.controlsTimeout();
-  }
-
-  /**
-   * Handle progress bar mouse down
-   * @param {MouseEvent} event - Mouse event
-   */
-  handleProgressMouseDown(event) {
-    this.userInteracting = true;
-    this.updateProgressFromMouse(event);
-  }
-
-  /**
-   * Handle progress bar mouse up
-   */
-  handleProgressMouseUp() {
-    this.userInteracting = false;
-    this.controlsTimeout();
-  }
-
-  /**
-   * Handle progress bar mouse move
-   * @param {MouseEvent} event - Mouse event
-   */
-  handleProgressMouseMove(event) {
-    if (this.userInteracting) {
-      this.updateProgressFromMouse(event);
-    }
   }
 
   /**
@@ -202,47 +303,11 @@ class UIController {
   }
 
   /**
-   * Handle play button click
-   */
-  handlePlayClick() {
-    eventEmitter.emit('video:toggle-play');
-  }
-
-  /**
-   * Handle volume change
-   * @param {Event} event - Input event
-   */
-  handleVolumeChange(event) {
-    eventEmitter.emit('video:volume-change', parseFloat(event.target.value));
-  }
-
-  /**
-   * Handle fullscreen button click
-   */
-  handleFullscreenClick() {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      this.container.requestFullscreen();
-    }
-  }
-
-  /**
-   * Update progress from mouse position
-   * @param {MouseEvent} event - Mouse event
-   */
-  updateProgressFromMouse(event) {
-    const rect = this.elements.progress.getBoundingClientRect();
-    const percent = Math.min(Math.max(0, (event.clientX - rect.left) / rect.width), 1);
-    eventEmitter.emit('video:seek-percent', percent);
-  }
-
-  /**
    * Update progress bar
    * @param {Object} data - Progress data
    */
   updateProgress({ currentTime, duration }) {
-    if (!this.userInteracting && this.elements.progress) {
+    if (!this.state.isDragging && this.elements.progress) {
       const percent = (currentTime / duration) * 100;
       this.elements.progress.style.setProperty('--progress', `${percent}%`);
       this.updateTimestamp(currentTime, duration);
@@ -300,7 +365,7 @@ class UIController {
    * Hide controls
    */
   hideControls() {
-    if (this.controlsVisible && !this.userInteracting) {
+    if (this.controlsVisible && !this.userInteracting && !this.state.isDragging) {
       this.controlsVisible = false;
       this.elements.controls.classList.add('hidden');
     }

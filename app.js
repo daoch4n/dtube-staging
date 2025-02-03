@@ -3,8 +3,14 @@ import UIController from './controllers/UIController.js';
 import eventEmitter from './utils/EventEmitter.js';
 import errorHandler from './utils/ErrorHandler.js';
 import { FrameRateLimiter, ColorAnalyzer } from './utils/performance.js';
-import { PERFORMANCE, UI } from './config/config.js';
-import './videoSources.js';
+import { PERFORMANCE, UI, VIDEO } from './config/config.js';
+import videoSourceManager from './videoSources.js';
+
+// Global state
+let isSeeking = false;
+let isRecovering = false;
+let bufferingUpdateScheduled = false;
+const providerIndices = new Map();
 
 /**
  * Main application class
@@ -58,20 +64,16 @@ class VideoApp {
         eventEmitter.on('video:seek-percent', (percent) => {
             const time = this.videoElement.duration * percent;
             this.videoElement.currentTime = time;
+            isSeeking = true;
+            setTimeout(() => isSeeking = false, 100);
         });
 
         eventEmitter.on('video:seek-forward', () => {
-            this.videoElement.currentTime = Math.min(
-                this.videoElement.currentTime + 10,
-                this.videoElement.duration
-            );
+            this.secsSeek(10);
         });
 
         eventEmitter.on('video:seek-backward', () => {
-            this.videoElement.currentTime = Math.max(
-                this.videoElement.currentTime - 10,
-                0
-            );
+            this.secsSeek(-10);
         });
 
         eventEmitter.on('video:volume-change', (volume) => {
@@ -93,6 +95,31 @@ class VideoApp {
 
         this.videoElement.addEventListener('pause', () => {
             eventEmitter.emit('video:pause');
+        });
+
+        // Buffer and seeking events
+        this.videoElement.addEventListener('seeking', () => {
+            isSeeking = true;
+            if (this.uiController) this.uiController.handleBufferingStart(true);
+        });
+
+        this.videoElement.addEventListener('seeked', () => {
+            isSeeking = false;
+            if (this.uiController) this.uiController.handleBufferingEnd();
+        });
+
+        this.videoElement.addEventListener('waiting', () => {
+            if (!bufferingUpdateScheduled && !isSeeking) {
+                bufferingUpdateScheduled = true;
+                setTimeout(() => {
+                    if (this.videoElement.readyState < 4 && !isRecovering && !isSeeking) {
+                        isRecovering = true;
+                        console.log('Attempting buffer recovery...');
+                        this.handleBufferRecovery();
+                    }
+                    bufferingUpdateScheduled = false;
+                }, 1000);
+            }
         });
 
         // Error handling
@@ -136,6 +163,81 @@ class VideoApp {
                     break;
             }
         });
+    }
+
+    /**
+     * Handle buffer recovery
+     */
+    async handleBufferRecovery() {
+        if (isRecovering) return;
+        isRecovering = true;
+
+        const currentTime = this.videoElement.currentTime;
+        const currentCid = this.videoController.getCurrentCid();
+        const bufferTimeout = 1000;
+        const recoveryAbortController = new AbortController();
+
+        try {
+            await Promise.race([
+                new Promise(resolve => {
+                    this.videoElement.addEventListener('playing', resolve, { once: true });
+                    this.videoElement.addEventListener('error', resolve, { once: true });
+                }),
+                new Promise((_, reject) => {
+                    setTimeout(() => {
+                        reject(new Error('Buffer recovery timeout'));
+                    }, bufferTimeout);
+                })
+            ]).catch(async (error) => {
+                if (!recoveryAbortController.signal.aborted) {
+                    console.log('Attempting buffer recovery for current video...');
+                    
+                    // Reset provider index for this CID
+                    providerIndices.set(currentCid, 0);
+
+                    // Get new URL from different provider
+                    const newUrl = this.videoController.generateProviderUrl(currentCid, 
+                        JSON.parse(localStorage.getItem(VIDEO.CID_VALID_CACHE_KEY))?.[currentCid]?.lastWorkingProvider
+                    );
+                    
+                    // Preserve playback state
+                    this.videoElement.src = newUrl;
+                    this.videoElement.currentTime = currentTime;
+                    
+                    // Wait for enough data to resume
+                    await new Promise((resolve) => {
+                        this.videoElement.addEventListener('canplaythrough', resolve, { once: true });
+                    });
+                    
+                    // Attempt playback with 3 retries
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        try {
+                            await this.videoElement.play();
+                            break;
+                        } catch (error) {
+                            if (attempt === 2) {
+                                console.log('Final recovery attempt failed, switching video');
+                                this.loadNextVideo();
+                            }
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+            });
+        } finally {
+            isRecovering = false;
+            recoveryAbortController.abort();
+        }
+    }
+
+    /**
+     * Seek by seconds
+     * @param {number} seconds - Seconds to seek
+     */
+    secsSeek(seconds) {
+        this.videoElement.currentTime = Math.max(0, this.videoElement.currentTime + seconds);
+        isSeeking = true;
+        setTimeout(() => isSeeking = false, 100);
     }
 
     /**

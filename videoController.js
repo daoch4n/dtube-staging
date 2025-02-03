@@ -2,6 +2,7 @@ import eventEmitter from './utils/EventEmitter.js';
 import { VideoError } from './utils/ErrorHandler.js';
 import { AnimationLoop } from './utils/performance.js';
 import { VIDEO } from './config/config.js';
+import videoSourceManager from './videoSources.js';
 
 /**
  * Manages video playback and state
@@ -12,6 +13,7 @@ export class VideoController {
         this.providers = providers;
         this.currentProvider = 0;
         this.isSeeking = false;
+        this.currentCid = null;
         this.bufferCheckInterval = null;
         this.initialize();
     }
@@ -92,6 +94,7 @@ export class VideoController {
      * @returns {Promise<void>}
      */
     async load(videoId) {
+        this.currentCid = videoId;
         this.currentProvider = 0;
         await this.tryLoadWithProvider(videoId);
     }
@@ -111,11 +114,89 @@ export class VideoController {
         try {
             const response = await this.fetchVideoMetadata(videoId, provider);
             await this.setupVideoSource(response);
+            // Store last working provider
+            const cache = JSON.parse(localStorage.getItem(VIDEO.CID_VALID_CACHE_KEY) || '{}');
+            cache[videoId] = {
+                ...cache[videoId],
+                lastWorkingProvider: provider.name
+            };
+            localStorage.setItem(VIDEO.CID_VALID_CACHE_KEY, JSON.stringify(cache));
         } catch (error) {
             console.warn(`Provider ${provider.name} failed:`, error);
             this.currentProvider++;
             return this.tryLoadWithProvider(videoId);
         }
+    }
+
+    /**
+     * Generate provider URL for CID
+     * @param {string} cid - Content ID
+     * @param {string} preferredProvider - Preferred provider name
+     * @returns {string} - Provider URL
+     */
+    generateProviderUrl(cid, preferredProvider) {
+        const provider = this.providers.find(p => p.name === preferredProvider) 
+            || this.providers[this.currentProvider];
+        return provider.getUrl(cid);
+    }
+
+    /**
+     * Get current CID
+     * @returns {string|null} - Current content ID
+     */
+    getCurrentCid() {
+        return this.currentCid;
+    }
+
+    /**
+     * Seek to specific time with timeout
+     * @param {number} time - Time to seek to
+     * @param {number} timeout - Timeout in milliseconds
+     * @returns {Promise<void>}
+     */
+    async seekTo(time, timeout = 3000) {
+        if (!this.video.seekable) return;
+
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.video.removeEventListener('seeked', onSeeked);
+                reject(new Error('Seek timeout'));
+            }, timeout);
+
+            const onSeeked = () => {
+                clearTimeout(timer);
+                this.video.removeEventListener('seeked', onSeeked);
+                resolve();
+            };
+            
+            this.video.addEventListener('seeked', onSeeked, { once: true });
+            this.video.currentTime = time;
+            
+            // Add seeking state management
+            if (!this.video.seeking) {
+                this.isSeeking = true;
+                const onSeeking = () => {
+                    this.isSeeking = true;
+                    this.video.removeEventListener('seeking', onSeeking);
+                };
+                this.video.addEventListener('seeking', onSeeking, { once: true });
+            }
+        }).finally(() => {
+            this.isSeeking = false;
+        });
+    }
+
+    /**
+     * Seek by delta with timeout
+     * @param {number} delta - Time delta to seek by
+     * @param {number} timeout - Timeout in milliseconds
+     * @returns {Promise<void>}
+     */
+    async seekBy(delta, timeout = 3000) {
+        return this.seekTo(
+            Math.max(0, Math.min(this.video.duration, this.video.currentTime + delta)),
+            timeout
+        );
     }
 
     /**
@@ -214,7 +295,8 @@ export class VideoController {
             muted: this.video.muted,
             playbackRate: this.video.playbackRate,
             seeking: this.isSeeking,
-            currentProvider: this.providers[this.currentProvider]?.name
+            currentProvider: this.providers[this.currentProvider]?.name,
+            currentCid: this.currentCid
         };
     }
 
