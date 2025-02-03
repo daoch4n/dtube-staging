@@ -171,12 +171,12 @@ class VideoApp {
 
         this.videoElement.addEventListener('seeking', () => {
             isSeeking = true;
-            if (this.uiController) this.uiController.handleBufferingStart(true);
+            this.uiController.handleBufferingStart(true);
         });
 
         this.videoElement.addEventListener('seeked', () => {
             isSeeking = false;
-            if (this.uiController) this.uiController.handleBufferingEnd();
+            this.uiController.handleBufferingEnd();
         });
 
         this.videoElement.addEventListener('ended', () => {
@@ -197,59 +197,24 @@ class VideoApp {
         
         const currentTime = this.videoElement.currentTime;
         const currentCid = videoSources[currentVideoIndex];
-        const bufferTimeout = 1000;
-        const recoveryAbortController = new AbortController();
+        const bufferTimeout = 1500;
         
         try {
-            await Promise.race([
+            const recoverySuccess = await Promise.race([
                 new Promise(resolve => {
-                    this.videoElement.addEventListener('playing', resolve, { once: true });
-                    this.videoElement.addEventListener('error', resolve, { once: true });
+                    this.videoElement.addEventListener('playing', () => resolve(true), { once: true });
+                    this.videoElement.addEventListener('error', () => resolve(false), { once: true });
                 }),
-                new Promise((_, reject) => {
-                    setTimeout(() => {
-                        reject(new Error('Buffer recovery timeout'));
-                    }, bufferTimeout);
-                })
-            ]).catch(async (error) => {
-                if (!recoveryAbortController.signal.aborted) {
-                    console.log('Attempting buffer recovery for current video...');
-                    
-                    // Reset provider index for this CID
-                    providerIndices.set(currentCid, 0);
+                new Promise(resolve => setTimeout(() => resolve(false), bufferTimeout))
+            ]);
 
-                    // Get new URL from different provider
-                    const newUrl = this.videoController.generateProviderUrl(currentCid, 
-                        JSON.parse(localStorage.getItem(VIDEO.CID_VALID_CACHE_KEY))?.[currentCid]?.lastWorkingProvider
-                    );
-                    
-                    // Preserve playback state
-                    this.videoElement.src = newUrl;
-                    this.videoElement.currentTime = currentTime;
-                    
-                    // Wait for enough data to resume
-                    await new Promise((resolve) => {
-                        this.videoElement.addEventListener('canplaythrough', resolve, { once: true });
-                    });
-                    
-                    // Attempt playback with 3 retries
-                    for (let attempt = 0; attempt < 3; attempt++) {
-                        try {
-                            await this.videoElement.play();
-                            break;
-                        } catch (error) {
-                            if (attempt === 2) {
-                                console.log('Final recovery attempt failed, switching video');
-                                this.loadNextVideo();
-                            }
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    }
-                }
-            });
+            if (!recoverySuccess) {
+                await this.videoController.switchProvider(currentCid);
+                this.videoElement.currentTime = currentTime;
+                await this.videoElement.play();
+            }
         } finally {
             isRecovering = false;
-            recoveryAbortController.abort();
         }
     }
 

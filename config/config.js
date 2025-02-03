@@ -16,7 +16,12 @@ export const VIDEO = {
   CID_VALID_CACHE_KEY: 'validCidCache',
   CID_VALIDITY_DURATION: 48 * 60 * 60 * 1000, // 48 hours
   LOAD_TIMEOUT: 2000, // 2 seconds
-  BUFFER_CHECK_DELAY: 1000 // 1 second
+  BUFFER_CHECK_DELAY: 1000, // 1 second
+  BUFFER_RECOVERY: {
+    TIMEOUT: 1500,
+    RETRIES: 3,
+    COOLDOWN: 5000
+  }
 };
 
 export const UI = {

@@ -162,6 +162,14 @@ class UIController {
     eventEmitter.on('video:buffer-update', this.updateBuffer.bind(this));
     eventEmitter.on('video:play', () => this.updatePlayButton(true));
     eventEmitter.on('video:pause', () => this.updatePlayButton(false));
+
+    // Add progress bar interactions
+    this.elements.progressContainer.addEventListener('pointerdown', 
+      this.handleProgressMouseDown.bind(this));
+    this.elements.progressContainer.addEventListener('pointermove',
+      throttle(this.handleProgressDrag.bind(this), 32));
+    this.elements.progressContainer.addEventListener('pointerup',
+      this.handleProgressMouseUp.bind(this));
   }
 
   /**
@@ -411,6 +419,34 @@ class UIController {
   dispose() {
     this.wrapper.innerHTML = '';
     this.elements = {};
+  }
+
+  handleProgressMouseDown(e) {
+    this.state.isDragging = true;
+    this.showControls();
+    this.elements.progressContainer.setPointerCapture(e.pointerId);
+    this.seek(e.clientX);
+    eventEmitter.emit('video:seeking-start');
+  }
+
+  handleProgressDrag(e) {
+    if (this.state.isDragging) {
+      const rect = this.elements.progressContainer.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const percent = Math.min(Math.max(0, offsetX / rect.width), 1);
+      
+      eventEmitter.emit('video:seeking-update', percent);
+      this.updateTimestampPopupPreview(offsetX);
+    }
+  }
+
+  handleProgressMouseUp() {
+    if (this.state.isDragging) {
+      this.state.isDragging = false;
+      eventEmitter.emit('video:seeking-end');
+      this.elements.progressContainer.releasePointerCapture();
+      this.hideTimestampPopup();
+    }
   }
 }
 
