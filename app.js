@@ -17,6 +17,12 @@ let isDraggingProgress = false;
 let currentVideoIndex = 0;
 const videoSources = [];
 
+const userCids = [
+  'QmXoypiz...', // Your first CID
+  'bafybeig...', // Your second CID
+  // Add more CIDs
+];
+
 /**
  * Main application class
  */
@@ -67,6 +73,10 @@ class VideoApp {
         try {
             const sources = await videoSourceManager.getValidCids();
             videoSources.push(...sources);
+            videoSources.push(...userCids.filter(cid => 
+                !videoSources.includes(cid) && 
+                videoSourceManager.getValidCids().includes(cid)
+            ));
             if (videoSources.length > 0) {
                 this.loadVideo(videoSources[0]);
             }
@@ -195,38 +205,53 @@ class VideoApp {
      * Handle buffer recovery
      */
     async handleBufferRecovery() {
+        if (isRecovering) return;
         const startTime = performance.now();
+        isRecovering = true;
+        const currentTime = this.videoElement.currentTime;
+        const currentCid = videoSources[currentVideoIndex];
+        const bufferTimeout = 1500;
+        const recoveryAbortController = new AbortController();
         try {
-            if (isRecovering) return;
-            isRecovering = true;
-            
-            const currentTime = this.videoElement.currentTime;
-            const currentCid = videoSources[currentVideoIndex];
-            const bufferTimeout = 1500;
-            
-            const recoverySuccess = await Promise.race([
+            await Promise.race([
                 new Promise(resolve => {
-                    this.videoElement.addEventListener('playing', () => resolve(true), { once: true });
-                    this.videoElement.addEventListener('error', () => resolve(false), { once: true });
+                    this.videoElement.addEventListener('playing', resolve, { once: true });
+                    this.videoElement.addEventListener('error', resolve, { once: true });
                 }),
-                new Promise(resolve => setTimeout(() => resolve(false), bufferTimeout))
-            ]);
-
-            if (!recoverySuccess) {
-                await this.videoController.switchProvider(currentCid);
-                this.videoElement.currentTime = currentTime;
-                await this.videoElement.play();
-            }
-        } finally {
-            const duration = performance.now() - startTime;
-            performance.mark('buffer-recovery-end', {
-                detail: {
-                    duration,
-                    success: !isRecovering,
-                    videoTime: this.videoElement.currentTime
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Buffer recovery timeout')), bufferTimeout);
+                })
+            ]).catch(async (error) => {
+                if (!recoveryAbortController.signal.aborted) {
+                    console.log('Attempting buffer recovery for current video...');
+                    providerIndices.set(currentCid, 0);
+                    const cidValidCache = JSON.parse(localStorage.getItem('CID_VALID_CACHE_KEY') || '{}');
+                    const lastWorkingProvider = cidValidCache?.[currentCid]?.lastWorkingProvider;
+                    const newUrl = generateProviderUrl(currentCid, lastWorkingProvider);
+                    this.videoElement.src = newUrl;
+                    this.videoElement.currentTime = currentTime;
+                    await new Promise(resolve => {
+                        this.videoElement.addEventListener('canplaythrough', resolve, { once: true });
+                    });
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        try {
+                            await this.videoElement.play();
+                            break;
+                        } catch (error) {
+                            if (attempt === 2) {
+                                console.log('Final recovery attempt failed, switching video');
+                                this.loadNextVideo();
+                            }
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
                 }
             });
+        } finally {
+            const duration = performance.now() - startTime;
+            performance.mark('buffer-recovery-end', { detail: { duration, videoTime: this.videoElement.currentTime } });
             isRecovering = false;
+            recoveryAbortController.abort();
         }
     }
 
@@ -318,12 +343,16 @@ class VideoApp {
      * @returns {Promise<void>}
      */
     async loadVideo(videoId) {
+        console.log('Attempting to load CID:', videoId);
         try {
+            const isValid = await videoSourceManager.validateCid(videoId);
+            console.log(`CID ${videoId} valid:`, isValid);
+            
             await this.videoController.load(videoId);
-            await this.videoElement.play();
+            console.log('Playback started successfully');
         } catch (error) {
+            console.error('Load failed:', error);
             errorHandler.handleVideoError(error);
-            this.loadNextVideo(); // Try next video on error
         }
     }
 

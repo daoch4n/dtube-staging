@@ -203,6 +203,7 @@ class UIController {
   handlePointerDown(e) {
     e.preventDefault();
     this.state.isDragging = true;
+    isSeeking = true;
     this.showControls();
     this.elements.progressContainer.setPointerCapture(e.pointerId);
     this.seek(e.clientX);
@@ -230,6 +231,7 @@ class UIController {
     if (this.state.isDragging) {
       this.seek(e.clientX);
       this.state.isDragging = false;
+      isSeeking = false;
       this.elements.progressContainer.classList.remove('dragging', 'active', 'near');
       this.hideTimestampPopup();
       this.elements.progressBar.classList.remove('dragging');

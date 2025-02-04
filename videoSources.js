@@ -8,6 +8,7 @@ class VideoSourceManager {
     constructor() {
         this.validCids = new Map();
         this.loadCachedCids();
+        this.preloadValidCids(VIDEO.PRELOADED_CIDS);
     }
 
     /**
@@ -86,13 +87,14 @@ class VideoSourceManager {
             const response = await fetch(`https://ipfs.io/api/v0/dag/get?arg=${cid}`, {
                 signal: controller.signal
             });
-
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return await response.json();
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                throw new Error('Metadata request timed out');
             }
-
-            const metadata = await response.json();
-            return metadata;
+            throw error;
         } finally {
             clearTimeout(timeout);
         }
@@ -174,6 +176,18 @@ class VideoSourceManager {
     getValidCids() {
         this.clearExpiredCids();
         return Array.from(this.validCids.keys());
+    }
+
+    preloadValidCids(cids) {
+        cids.forEach(cid => {
+            if (!this.validCids.has(cid)) {
+                this.validCids.set(cid, {
+                    preloaded: true,
+                    timestamp: Date.now()
+                });
+            }
+        });
+        this.saveCachedCids();
     }
 }
 

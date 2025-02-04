@@ -152,12 +152,14 @@ class VideoControllerFactory {
    * @returns {string} - Provider URL
    */
   buildProviderUrl(provider, cid) {
-    if (provider === 'ipfs.io') {
-      return `https://ipfs.io/ipfs/${cid}`;
-    }
+    // Handle special cases first
+    if (provider === 'ipfs.io') return `https://ipfs.io/ipfs/${cid}`;
+    if (provider === 'algonode.xyz') return `https://ipfs.algonode.xyz/ipfs/${cid}`;
+    
+    // Handle subdomain-style gateways
     return ["dweb.link", "flk-ipfs.xyz"].includes(provider)
-      ? `https://${cid}.ipfs.${provider}`
-      : `https://ipfs.${provider}/ipfs/${cid}`;
+        ? `https://${cid}.ipfs.${provider}`
+        : `https://ipfs.${provider}/ipfs/${cid}`;
   }
 
   /**

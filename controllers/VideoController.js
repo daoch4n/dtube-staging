@@ -105,16 +105,17 @@ export class VideoController {
    */
   async selectBestProvider(cid) {
     const availableProviders = this.providers.filter(provider => 
-      this.providerScores.get(provider.name) >= VIDEO_SETTINGS.MIN_PROVIDER_SCORE
+      this.providerScores.get(provider.name) >= 0.5
     );
 
     if (availableProviders.length === 0) {
-      throw new Error('No available providers');
+      return this.providers[this.currentProvider % this.providers.length];
     }
 
-    // Sort by score
+    // Sort by score with randomness factor
     availableProviders.sort((a, b) => 
-      this.providerScores.get(b.name) - this.providerScores.get(a.name)
+      (this.providerScores.get(b.name) * Math.random()) - 
+      (this.providerScores.get(a.name) * Math.random())
     );
 
     return availableProviders[0];

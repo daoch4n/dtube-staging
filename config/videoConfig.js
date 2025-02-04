@@ -116,11 +116,7 @@ export const SUPPORTED_FORMATS = [
     {
         extension: 'webm',
         mimeType: 'video/webm',
-        codecs: ['vp8', 'vorbis']
-    },
-    {
-        extension: 'mov',
-        mimeType: 'video/quicktime'
+        codecs: ['av1', 'opus']
     }
 ];
 
